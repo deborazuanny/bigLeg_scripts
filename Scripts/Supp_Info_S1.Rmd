@@ -1,0 +1,263 @@
+---
+title: "Supporting Information Methods S1"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+## __Article title:__ Big genera in Leguminosae: global distribution and taxonomic changes through time
+## __Script authors:__ Débora C. Zuanny and Domingos Cardoso
+
+\
+
+## __Contents__
+
+__Reproducing the results__
+
+
+  * Usage ............................................................................................ 1
+  * Extracting all Leguminosae/Fabaceae species ..................................................... 2
+  * Searching for the big legume genera and their nomenclatural data ................................. 3
+  * Plotting global distribution maps and graphics of the big legume genera ............................ 4
+\
+
+## Usage
+
+We have created __expowo__ to automatize the process of extracting data from Kew's, Plants of The World Online database using R. Our goal is to pull species lists with all associated data of any vascular plant family. The results present in the paper makes uses of this new R package. If you do not already have it, install __expowo__ from GitHub and load it with:
+
+```r
+install.packages("devtools")
+devtools::install_github("DBOSlab/expowo")
+library(expowo)
+```
+Here we will show how to extract the data used in this paper, and then use this data to plot global distribution maps of species richness and the species accumulation curves.
+
+\
+\
+\
+\
+\
+\
+\
+\
+
+## Extracting all Leguminosae/Fabaceae species
+
+To create the dataset with all legume species available at Plants of the 
+World Online, use the function `powoSpecies`:
+
+```r
+expowo::powoSpecies(family = "Fabaceae",
+                    hybrid = FALSE,
+                    verbose = TRUE,
+                    save = TRUE,
+                    dir = "results_powoSpecies/",
+                    filename = "Fabaceae_search")
+```
+
+## Searching for the big legume genera and their nomenclatural data
+
+To search for the big genera, use the function `megaGen` and set the threshold to 500 species and the argument family to "Fabaceae".
+
+```r
+mega_Fab <- expowo::megaGen(family = "Fabaceae",
+                            thld = 500,
+                            verbose = TRUE,
+                            save = TRUE,
+                            dir = "results_megaGen/",
+                            filename = "legume_big_genera_species")
+```
+
+With this dataset, it was possible to filter and gather nomenclatural information. The custom R script used to do so is present here: 
+
+```r
+# Load required packages 
+library(magrittr)
+library(dplyr)
+library(ggplot2)
+library(cowplot)
+library(viridis)
+
+# Import the file
+list.files()
+df <- read.csv("legume_big_genera_species.csv")
+
+df <- apply(df, 2, function(x) gsub("^$", NA, x))
+df <- data.frame(df)
+
+# Creating new columns for the year and corrected year of publication
+df <- df %>% tibble::add_column(year = NA, .after = "publication")
+df <- df %>% tibble::add_column(year_corrected = NA, .after = "year")
+df <- df %>% tibble::add_column(number_synonyms = NA, .after = "accepted_name")
+
+# Extracting the year from the full publication information
+# Clean examples such as "non C. caerulea Jacq.", ", non Engelh. (1898)"
+df$publication <- gsub(",\\snon\\s[[:upper:]].*", "",  df$publication)
+
+# Get examples of not validly published names
+tf <- grepl("[0-9][)],\\s", df$publication)
+p <- unique(gsub(".*[)],\\s", "", df$publication[tf]))
+
+tf_inval <- !grepl(paste0(p, collapse = "|"), df$publication)
+
+df$year[tf_inval] <- gsub(",\\scontrary.*", "", df$publication[tf_inval])
+df$year[tf_inval] <- gsub(".*[(]|[)].*|.*.\\s|.*[.]", "", df$year[tf_inval])
+df$year[tf_inval] <- gsub("unknown\\spublication|publication", "unknown", 
+                          df$year[tf_inval])
+df$year[!tf_inval] <- gsub(".*[(]|,.*", "", df$publication[!tf_inval])
+df$year[!tf_inval] <- gsub(".*[.]\\s|[)].*", "", df$year[!tf_inval])
+df$year[!tf_inval] <- gsub("unknown\\spublication|publication", "unknown", 
+                           df$year[!tf_inval])
+
+# Extracting the correct year for species with synonyms
+# Fill corrected year for species without synonyms
+tf_accepted <- df$status %in% "Accepted"
+# Get the accepted names for species without any synonym
+tftf <- !df$scientific_name[tf_accepted] %in% df$accepted_name
+df$year_corrected[tf_accepted][tftf] <- df$year[tf_accepted][tftf]
+
+# Count number of synonyms
+df$number_synonyms[tf_accepted][tftf] <- 0
+df$number_synonyms[tf_accepted][!tftf] <- table(df$accepted_name)
+
+# Extracting the correct year for species with synonyms
+n_au <- unique(df$accepted_name[!is.na(df$accepted_name)])
+for (i in seq_along(n_au)) {
+
+  tf <- df$scientific_name[tf_accepted] %in% n_au[i]
+  year_acc <- df$year[tf_accepted][tf]
+
+  tftf <- df$accepted_name[tf_inval] %in% n_au[i]
+  temp <- df[tf_inval, ][tftf, ]
+  temp <- temp[!grepl("\\svar[.]|\\sf[.]\\s|\\ssubsp[.]\\s", 
+                      temp$scientific_name), ]
+  if(length(temp$year) == 0) {
+    year_syn <- NA
+  } else {
+    year_syn <- min(temp$year)
+  }
+
+  if (year_acc < year_syn |
+      is.na(year_syn)) {
+    df$year_corrected[tf_accepted][tf] <- year_acc
+  } else {
+    df$year_corrected[tf_accepted][tf] <- year_syn
+  }
+
+}
+
+# Identify each change in the corrected year of species discovery
+df$year <- as.numeric(df$year)
+tf <- is.na(df$year_corrected)
+df$year_corrected[!tf] <- as.numeric(df$year_corrected[!tf])
+
+df$year <- as.numeric(df$year)
+df$year_corrected <- as.numeric(df$year_corrected)
+
+tf <- df$year == df$year_corrected
+
+df <- df %>% tibble::add_column(year_changed = NA, .after = "year_corrected")
+df$year_changed[tf] <- "no"
+df$year_changed[!tf] <- "yes"
+
+# Final spreadsheet including the input df with only the accepted species and
+# associated corrected year
+df_accepted <- df %>%
+  filter(status == "Accepted") %>%
+  select(-c("status", "accepted_name"))
+
+
+write.csv(df_accepted, "data_to_plot.csv")
+```
+\
+
+## Plotting global distribution maps and graphs of the big legume genera
+
+To create maps for each big legume genera with "rocket" color scale from Viridis, which composed the Figures 1-4, run the following R code:
+
+```r
+# To create one map for each big genera according to political countries
+expowo::powoMap(inputdf = mega_Fab,
+                botctrs = FALSE,
+                distcol = "native_to_country",
+                taxclas = "genus",
+                verbose = FALSE,
+                save = TRUE,
+                vir_color = "rocket",
+                bre_color = NULL,
+                leg_title = "SR",
+                dpi = 600,
+                dir = "results_powoMap/",
+                filename = "Fab_global_richness_country_map",
+                format = "jpg")
+                
+# To create one map for each big genera according to botanical subdivision
+expowo::powoMap(inputdf = mega_Fab,
+                botctrs = TRUE,
+                distcol = "native_to_botanical_countries",
+                taxclas = "genus",
+                verbose = FALSE,
+                save = TRUE,
+                vir_color = "rocket",
+                bre_color = NULL,
+                leg_title = "SR",
+                dpi = 600,
+                dir = "results_powoMap/",
+                filename = "Fab_global_richness_botcountry_map",
+                format = "jpg")
+```
+\
+
+After running the previous steps of this section, use the dataframe "df_accepted" to
+plot the accumulation of species richness for each big legume genera.
+
+```r
+# Plot figures
+
+scales::show_col(viridis(10, option = "magma"))
+cols <- c("#180F3EFF", "#F1605DFF")
+
+tax_group <- unique(df_accepted$genus)
+for (i in seq_along(tax_group)) {
+
+  temp_df_accepted <- df_accepted[df_accepted$genus %in% tax_group[i], ]
+  l <- length(temp_df_accepted$species)
+
+  plot <- ggplot(temp_df_accepted, aes(year, colour = year_changed))+
+    #geom_vline(xintercept = 1850, colour = "red", linetype="dashed", size = 1, 
+                alpha=0.6)+
+    stat_ecdf(linewidth = 1.5, alpha=0.6, geom = "step") +
+    theme_bw() +
+    ylab(eval(bquote(expression(
+    bold("Accumulation of species discovery in")~bolditalic(.(tax_group[i])))))) +
+    theme(axis.title.x=element_blank()) +
+    scale_color_manual(values = cols) +
+    scale_y_continuous(breaks=scales::pretty_breaks(n=5), 
+                       labels=scales::percent_format(accuracy = 1)) +
+    scale_x_continuous(breaks=c(1753, 1800, 1850, 1900, 1950, 2000,
+                                max(df$year[!is.na(df$year)]))) +
+    theme(axis.title.y=element_text(size=14, margin=margin(0,12,0,0))) +
+    theme(axis.text.x=element_text(size=14)) +
+    theme(axis.text.y=element_text(size=14)) +
+    theme(legend.title = element_text(size=14)) +
+    theme(legend.position = c(0.2, 0.8),
+          legend.key = element_rect(linewidth=10, linetype='blank'),
+          legend.text = element_text(size=14),
+          legend.key.size = unit(1, "cm"),
+          legend.title = element_text(size=14)) +
+    guides(alpha='none', colour=guide_legend("Publication year corrected"), 
+           size=14) +
+    annotate("text", x = 2020, y = 1.02,
+             label = paste(l, " spp."),
+             colour = "black", alpha=0.6)
+
+  save_plot(paste0("cumulative_discovery_", tax_group[i], ".jpg"), plot,
+            ncol = 1, nrow = 1,
+            base_height = 8.5,
+            base_aspect_ratio = 1.3,
+            base_width = NULL)
+}
+```
